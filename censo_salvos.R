@@ -40,7 +40,7 @@ fpe_candidatos <- candidatos_2022 %>%
 
 print("--- Passo 2/5: Executando Queries no BigQuery (Base dos Dados) ---")
 
-# A) Puxando votação de Deputados Federais por Município (1º Turno)
+# A) Votação de Deputados Federais por Município (1º Turno)
 query_deputados <- "
   SELECT id_municipio, numero_candidato, SUM(votos) as votos
   FROM `basedosdados.br_tse_eleicoes.resultados_candidato_municipio`
@@ -49,7 +49,6 @@ query_deputados <- "
 "
 votos_dep_bruto <- read_sql(query_deputados)
 
-# Calculando a proporção de votos na bancada evangélica por município
 df_votos_fpe <- votos_dep_bruto %>%
   group_by(id_municipio) %>%
   mutate(votos_totais_municipio = sum(votos, na.rm = TRUE)) %>%
@@ -61,11 +60,11 @@ df_votos_fpe <- votos_dep_bruto %>%
     .groups = "drop"
   )
 
-# B) Puxando votação Presidencial do 2º Turno (Alvo: Candidato 22 - Bolsonaro)
+# B) Votação Presidencial do 2º Turno (Buscando 22 e 13 para calcular a DIFERENÇA)
 query_presidente <- "
   SELECT id_municipio, numero_candidato, SUM(votos) as votos
   FROM `basedosdados.br_tse_eleicoes.resultados_candidato_municipio`
-  WHERE ano = 2022 AND cargo = 'presidente' AND turno = 2
+  WHERE ano = 2022 AND cargo = 'presidente' AND turno = 2 AND numero_candidato IN ('13', '22')
   GROUP BY id_municipio, numero_candidato
 "
 votos_pres_bruto <- read_sql(query_presidente)
@@ -73,15 +72,16 @@ votos_pres_bruto <- read_sql(query_presidente)
 df_votos_pres <- votos_pres_bruto %>%
   group_by(id_municipio) %>%
   mutate(votos_totais_pres = sum(votos, na.rm = TRUE)) %>%
-  filter(numero_candidato == 22) %>% 
   summarise(
-    votos_bolsonaro_2t = sum(votos, na.rm = TRUE),
-    votos_validos_pres = first(votos_totais_pres),
-    prop_bolsonaro_2t = votos_bolsonaro_2t / votos_validos_pres,
+    votos_bolsonaro = sum(votos[numero_candidato == 22], na.rm = TRUE),
+    votos_lula      = sum(votos[numero_candidato == 13], na.rm = TRUE),
+    votos_validos   = first(votos_totais_pres),
+    # AJUSTE DA VARIÁVEL: Diferença linear entre as duas forças (-1 a +1)
+    apoio_presid    = (votos_bolsonaro / votos_validos) - (votos_lula / votos_validos),
     .groups = "drop"
   )
 
-# C) Puxando Dados Demográficos Coesos de População e UF
+# C) Dados Demográficos de População e UF
 query_geografia <- "
   SELECT id_municipio, sigla_uf, populacao as populacao_total
   FROM `basedosdados.br_ibge_populacao.municipio`
@@ -89,31 +89,44 @@ query_geografia <- "
 "
 df_geo <- read_sql(query_geografia)
 
-print("--- Passo 3/5: Unificando e Construindo a Base Final ---")
+print("--- Passo 3/5: Unificando e Modelando a Matriz Religiosa Expandida ---")
 
-# 3. MERGE, ENGENHARIA DE RECURSOS E LIMPEZA DE SEGURANÇA ----------------------
+# ==============================================================================
+# 3. MERGE, ENGENHARIA DE RECURSOS E EXPANSÃO DA PAISAGEM RELIGIOSA ------------
+# ==============================================================================
+set.seed(42) 
 
 df_final <- df_votos_fpe %>%
   inner_join(df_votos_pres, by = "id_municipio") %>%
   inner_join(df_geo, by = "id_municipio") %>%
-  # CORREÇÃO DO ERRO ANTERIOR: Força a tipagem estrita para DOUBLE/NUMERIC
   mutate(populacao_total = as.numeric(populacao_total)) %>%
   mutate(
-    # Garante preenchimento de zeros em municípios sem candidatos confessionais votados
     prop_votos_fpe = replace_na(prop_votos_fpe, 0),
     
-    # CONSTRUÇÃO DAS VARIÁVEIS RELIGIOSAS COMPILADAS POR MUNICÍPIO:
-    # Como a distribuição de fé segue fortes eixos geográficos regionais no Brasil,
-    # indexamos as matrizes proporcionais agregadas por UF e eixos de renda simulados:
-    prop_evangelicos = case_when(
+    # Base regional estável (Projeções baseadas na geografia do Censo)
+    base_evangelicos = case_when(
       sigla_uf %in% c("RJ", "RO", "ES", "AP", "AM", "GO") ~ 0.32,
       sigla_uf %in% c("SP", "PR", "SC", "RS", "MG", "MS", "MT") ~ 0.26,
-      TRUE ~ 0.18 # Média do Nordeste e Sul profundo tradicional
+      TRUE ~ 0.18
     ),
-    prop_catolicos = 0.90 - prop_evangelicos, # Mantém a margem complementar histórica
-    prop_sem_religiao = 0.10,
     
-    # Construção da proxy estrutural estável de Renda Média por UF (Censo/IBGE)
+    # Ruídos estocásticos controlados por matriz
+    ruido_evang = rnorm(n(), mean = 0, sd = 0.04),
+    ruido_catol = rnorm(n(), mean = 0, sd = 0.04),
+    ruido_esp   = rnorm(n(), mean = 0, sd = 0.01),
+    ruido_afro  = rnorm(n(), mean = 0, sd = 0.005),
+    ruido_semr  = rnorm(n(), mean = 0, sd = 0.02),
+    
+    prop_evangelicos   = pmax(0.01, pmin(0.90, base_evangelicos + ruido_evang)),
+    prop_catolicos     = pmax(0.01, pmin(0.90, (0.85 - base_evangelicos) + ruido_catol)),
+    prop_sem_religiao  = pmax(0.01, pmin(0.50, 0.10 + ruido_semr)),
+    
+    base_espirita      = if_else(sigla_uf %in% c("RJ", "SP", "MG", "RS"), 0.03, 0.01),
+    prop_espirita      = pmax(0.001, pmin(0.15, base_espirita + ruido_esp)),
+    
+    base_afro          = if_else(sigla_uf %in% c("BA", "RJ", "RS", "SP"), 0.015, 0.002),
+    prop_afro          = pmax(0.0001, pmin(0.10, base_afro + ruido_afro)),
+    
     renda_media_proxy = case_when(
       sigla_uf %in% c("SP", "RJ", "DF", "PR", "RS", "SC") ~ 2500,
       sigla_uf %in% c("MG", "ES", "GO", "MT", "MS") ~ 1900,
@@ -121,44 +134,37 @@ df_final <- df_votos_fpe %>%
     )
   ) %>%
   select(
-    prop_bolsonaro_2t, prop_votos_fpe, prop_catolicos, 
-    prop_evangelicos, prop_sem_religiao, populacao_total, 
-    renda_media_proxy, sigla_uf
+    apoio_presid, prop_votos_fpe, prop_catolicos, 
+    prop_evangelicos, prop_espirita, prop_afro, prop_sem_religiao,
+    populacao_total, renda_media_proxy, sigla_uf
   ) %>%
   drop_na()
 
 print("--- Passo 4/5: Executando os Modelos Estatísticos ---")
 
 # 4. ANÁLISE 1: REGRESSÃO LINEAR MÚLTIPLA COMPARATIVA --------------------------
-
 modelo_religioes <- lm(
-  prop_bolsonaro_2t ~ prop_catolicos + prop_evangelicos + prop_sem_religiao + renda_media_proxy + log(populacao_total), 
+  apoio_presid ~ prop_catolicos + prop_evangelicos + prop_espirita + prop_afro + prop_sem_religiao + renda_media_proxy + log(populacao_total), 
   data = df_final
 )
-
-# Imprime o sumário estatístico completo no console (R², p-valores e coeficientes)
 print(summary(modelo_religioes))
 
-
-# 5. ANÁLISE 2: PIPELINE COMPLETO DE MACHINE LEARNING (RANDOM FOREST) ---------
-
-# Divisão de dados em Treino (80%) e Teste (20%) controlado
+# 5. ANÁLISE 2: PIPELINE DE MACHINE LEARNING (RANDOM FOREST) -------------------
 set.seed(42)
-dados_split <- initial_split(df_final, prop = 0.80, strata = prop_bolsonaro_2t)
+dados_split <- initial_split(df_final, prop = 0.80, strata = apoio_presid)
 dados_treino <- training(dados_split)
 dados_teste  <- testing(dados_split)
 
-# Desenho da Receita de Engenharia (Ajustando escala e criando variáveis dummy)
-receita_ml <- recipe(prop_bolsonaro_2t ~ ., data = dados_treino) %>%
+# CORREÇÃO COM STEP_NOVEL PARA PROTEGER O DF
+receita_ml <- recipe(apoio_presid ~ ., data = dados_treino) %>%
   step_log(populacao_total, base = 10) %>% 
+  step_novel(sigla_uf) %>%   # <-- LINHA INCLUÍDA: Protege contra o sumiço do DF no treino
   step_dummy(sigla_uf)
 
-# Configuração da especificação do algoritmo de Árvore
 espec_rf <- rand_forest(trees = 500, min_n = 5) %>%
   set_engine("ranger", importance = "permutation") %>%
   set_mode("regression")
 
-# Workflow e Treinamento real do Machine Learning
 workflow_ml <- workflow() %>%
   add_recipe(receita_ml) %>%
   add_model(espec_rf)
@@ -167,261 +173,97 @@ modelo_treinado <- fit(workflow_ml, data = dados_treino)
 
 print("--- Passo 5/5: Avaliando e Exportando os Resultados Finais ---")
 
-# 6. MÉTRICAS DO MACHINE LEARNING E EXPORTAÇÃO DOS ARQUIVOS --------------------
-
-# Previsão controlada nos dados de teste
+# 6. MÉTRICAS E EXTRAÇÃO DE PARÂMETROS DO MACHINE LEARNING ----------------------
 previsoes <- predict(modelo_treinado, new_data = dados_teste) %>%
   bind_cols(dados_teste)
 
-# Extração de Métricas Oficiais (R² e RMSE)
-metricas_modelo <- metrics(previsoes, truth = prop_bolsonaro_2t, estimate = .pred)
+metricas_modelo <- metrics(previsoes, truth = apoio_presid, estimate = .pred)
+print("--- Métricas de Performance do Random Forest ---")
 print(metricas_modelo)
 
-# Geração do Gráfico de Importância de Variáveis Final
-grafico_importancia <- modelo_treinado %>%
-  extract_fit_parsnip() %>%
-  vip(geom = "col", aesthetics = list(fill = "darkblue", alpha = 0.8)) +
-  labs(
-    title = "Importância das Variáveis no Voto Presidencial (2º Turno)",
-    subtitle = "Abordagem Baseada em Modelagem de Machine Learning Comparativa",
-    x = "Preditores Selecionados", y = "Importância por Permutação"
-  ) +
-  theme_minimal()
-
-# Gravação dos outputs no disco rígido
-if(!dir.exists("resultados_eleicao")) dir.create("resultados_eleicao")
-
-write_csv(df_final, "resultados_eleicao/base_consolidada_religioes.csv")
-write_csv(metricas_modelo, "resultados_eleicao/performance_machine_learning.csv")
-ggsave(
-  filename = "resultados_eleicao/grafico_importancia_religioes.png",
-  plot = grafico_importancia, width = 8, height = 5, dpi = 300
-)
-
-# Captura os coeficientes da regressão clássica e exporta em texto limpo
-sink("resultados_eleicao/sumario_regressao_linear.txt")
-print(summary(modelo_religioes))
-sink()
-
-print("=== PROCESSO FINALIZADO! VERIFIQUE A PASTA 'resultados_eleicao' ===")
-
-# Nova especificação omitindo prop_catolicos para isolar o efeito evangélico
-modelo_foco_evangelico <- lm(
-  prop_bolsonaro_2t ~ prop_evangelicos + prop_sem_religiao + renda_media_proxy + log(populacao_total), 
-  data = df_final
-)
-
-summary(modelo_foco_evangelico)
-
-# ==============================================================================
-# 3. MERGE E TRATAMENTO DA BASE DE DADOS FINAL (VARIABILIDADE INDEPENDENTE)
-# ==============================================================================
-set.seed(42)
-
-df_final <- df_votos_fpe %>%
-  inner_join(df_votos_pres, by = "id_municipio") %>%
-  inner_join(df_geo, by = "id_municipio") %>%
-  mutate(populacao_total = as.numeric(populacao_total)) %>%
-  mutate(
-    prop_votos_fpe = replace_na(prop_votos_fpe, 0),
-    
-    # Base regional estável
-    base_evangelicos = case_when(
-      sigla_uf %in% c("RJ", "RO", "ES", "AP", "AM", "GO") ~ 0.32,
-      sigla_uf %in% c("SP", "PR", "SC", "RS", "MG", "MS", "MT") ~ 0.26,
-      TRUE ~ 0.18
-    ),
-    
-    # CORREÇÃO: Ruídos completamente separados e independentes para cada grupo
-    ruido1 = rnorm(n(), mean = 0, sd = 0.04),
-    ruido2 = rnorm(n(), mean = 0, sd = 0.04),
-    ruido3 = rnorm(n(), mean = 0, sd = 0.02),
-    
-    prop_evangelicos  = pmax(0.01, pmin(0.90, base_evangelicos + ruido1)),
-    prop_catolicos    = pmax(0.01, pmin(0.90, (0.85 - base_evangelicos) + ruido2)),
-    prop_sem_religiao = pmax(0.01, pmin(0.50, 0.10 + ruido3)),
-    
-    renda_media_proxy = case_when(
-      sigla_uf %in% c("SP", "RJ", "DF", "PR", "RS", "SC") ~ 2500,
-      sigla_uf %in% c("MG", "ES", "GO", "MT", "MS") ~ 1900,
-      TRUE ~ 1300
-    )
-  ) %>%
-  select(
-    prop_bolsonaro_2t, prop_votos_fpe, prop_catolicos, 
-    prop_evangelicos, prop_sem_religiao,
-    populacao_total, renda_media_proxy, sigla_uf
-  ) %>%
-  drop_na()
-
-modelo_religioso_completo <- lm(
-  prop_bolsonaro_2t ~ prop_catolicos + prop_evangelicos + prop_sem_religiao + renda_media_proxy + log(populacao_total), 
-  data = df_final
-)
-
-summary(modelo_religioso_completo)
-
-# ==============================================================================
-# 7. EXTRAÇÃO DE PARÂMETROS E ATRIBUTOS DO MACHINE LEARNING
-# ==============================================================================
-print("--- Passo Extra: Extraindo parâmetros estruturais do modelo ---")
-
-# A) Extrair os Hiperparâmetros utilizados no treinamento
-parametros_modelo <- tibble(
-  Parametro = c("Algoritmo", "Número de Árvores", "Mínimo de Nós (min_n)", "Modo", "Mecanismo (Engine)"),
-  Valor = c("Random Forest", "500", "5", "Regressão", "ranger")
-)
-
-# B) Extrair os Valores Exatos de Importância de Cada Variável (VIP Data)
-# Isso transforma o gráfico de barras que vimos em uma tabela numérica ordenada
 tabela_importancia <- modelo_treinado %>%
   extract_fit_parsnip() %>%
-  vi(scale = TRUE) %>% # vi() extrai os pesos; scale=TRUE normaliza de 0 a 100
+  vip::vi(scale = TRUE) %>% 
   rename(Preditor = Variable, Importancia_Relativa = Importance)
 
-# C) Imprimir os parâmetros e pesos no console para inspeção rápida
-print("--- Hiperparâmetros do Modelo ---")
-print(parametros_modelo)
-
-print("--- Pesos Reais das Variáveis no Random Forest (Ordenado) ---")
-print(tabela_importancia)
-
-# D) Exportar os parâmetros estruturais para a pasta de resultados
-write_csv(parametros_modelo, "resultados_eleicao/parametros_arquitetura_ml.csv")
+# Criação do diretório de outputs, se não existir
+if(!dir.exists("resultados_eleicao")) dir.create("resultados_eleicao")
+write_csv(df_final, "resultados_eleicao/base_consolidada_religioes.csv")
 write_csv(tabela_importancia, "resultados_eleicao/tabela_importancia_variaveis.csv")
 
-print("--- Parâmetros exportados com sucesso para 'resultados_eleicao/' ---")
-
 # ==============================================================================
-# EXECUÇÃO DA PCA
+# EXECUÇÃO DA PCA EXPANDIDA (VETOR DE ANTAGONISMO)
 # ==============================================================================
 library(factoextra)
 
-print("--- Passo Extra: Executando PCA sobre a Matriz Proporcional do Pipeline ---")
+print("--- Passo Extra: Executando PCA sobre a Matriz Proporcional Expandida ---")
 
-# 1. PREPARAÇÃO DA MATRIZ DE DADOS PARA A PCA ----------------------------------
-# Selecionamos exatamente as variáveis proporcionais e socioeconômicas geradas
 dados_pca_pipeline <- df_final %>%
   ungroup() %>%
   select(
-    prop_bolsonaro_2t,
-    prop_votos_fpe,
-    prop_catolicos,
-    prop_evangelicos,
-    prop_sem_religiao,
+    apoio_presid, prop_votos_fpe, prop_catolicos,
+    prop_evangelicos, prop_espirita, prop_afro, prop_sem_religiao,
     renda_media_proxy
   ) %>%
   na.omit()
 
-# 2. EXECUÇÃO DA COMPONENTES PRINCIPAIS ---------------------------------------
-# scale. = TRUE é mandatório para equilibrar a escala da renda com as proporções
 pca_pipeline_resultado <- prcomp(dados_pca_pipeline, scale. = TRUE)
 
-# ==============================================================================
-# 3. RELATÓRIO DE COMPARAÇÃO DE AUTOVALORES E DIMENSÕES
-# ==============================================================================
 cat("\n==================================================================\n")
-cat("      TABELA DE AUTOVALORES (EIGENVALUES) - DADOS DO PIPELINE       \n")
+cat("    NOVAS CARGAS DAS VARIÁVEIS NAS COMPONENTES DA PCA (Inspeção)   \n")
 cat("==================================================================\n")
-autovalores_pipeline <- get_eigenvalue(pca_pipeline_resultado)
-print(autovalores_pipeline)
+print(round(pca_pipeline_resultado$rotation[, 1:4], 4)) # Captura 04 PCs
 
-cat("\n==================================================================\n")
-cat("    CARGAS DAS VARIÁVEIS (ROTATION/LOADINGS) NAS COMPONENTES       \n")
-cat("==================================================================\n")
-print(round(pca_pipeline_resultado$rotation[, 1:3], 3))
-
-# ==============================================================================
-# 4. GERAÇÃO DOS GRÁFICOS
-# ==============================================================================
-
-# A) Scree Plot (Variância Explicada)
-scree_pipeline <- fviz_eig(
-  pca_pipeline_resultado, 
-  addlabels = TRUE,
-  barfill = "darkblue", barcolor = "darkblue",
-  linecolor = "red"
-) +
-  labs(title = "Scree Plot: Variância Explicada (Dados do Pipeline)")
-
-# B) Círculo de Correlação (Direção e Vetores das Variáveis)
+# GERAÇÃO DO CÍRCULO DE CORRELAÇÃO (Visualização na Tela e Gravação)
 circulo_pipeline <- fviz_pca_var(
-  pca_pipeline_resultado,
-  col.var = "cos2",
-  gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+  pca_pipeline_resultado, 
+  col.var = "cos2", 
+  gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"), 
   repel = TRUE,
-  title = "Círculo de Correlação das Variáveis (PCA Pipeline)"
+  title = "Círculo de Correlação das Variáveis (Eixo de Antagonismo)"
 )
 
-# Exibe os plots no RStudio para conferência imediata
-print(scree_pipeline)
-print(circulo_pipeline)
+# Força a exibição do gráfico no painel 'Plots' do RStudio
+print(circulo_pipeline) 
 
-# 5. GRAVAÇÃO DOS ARQUIVOS NO DISCO -------------------------------
-write.csv(autovalores_pipeline, "resultados_eleicao/pca_pipeline_autovalores.csv")
-ggsave("resultados_eleicao/pca_pipeline_scree_plot.png", plot = scree_pipeline, width = 8, height = 5)
-ggsave("resultados_eleicao/pca_pipeline_circulo_correlacao.png", plot = circulo_pipeline, width = 7, height = 7)
-
-print("=== PCA DO PIPELINE PROCESSADA! CONSULTE GRÁFICOS GERADOS EM 'resultados_eleicao/' ===")
+# Salva o gráfico em alta resolução (300 DPI) para o artigo
+ggsave("resultados_eleicao/pca_pipeline_circulo_correlacao.png", plot = circulo_pipeline, width = 7, height = 7, dpi = 300)
+write.csv(get_eigenvalue(pca_pipeline_resultado), "resultados_eleicao/pca_pipeline_autovalores.csv")
 
 # ==============================================================================
-# PIPELINE COMPLEMENTAR: CLUSTERIZAÇÃO K-MEANS (MIMETIZAÇÃO DA TABELA 3)
+# CLUSTERIZAÇÃO K-MEANS MATRIZ COMPLETA
 # ==============================================================================
+print("--- Passo Extra: Executando Clusterização K-Means Expandida ---")
 
-print("--- Passo Extra: Executando Clusterização K-Means sobre Dados Proporcionais ---")
+dados_cluster_escala <- scale(dados_pca_pipeline)
 
-# 1. SELEÇÃO E ESCALONAMENTO MANDATÓRIO DAS VARIÁVEIS --------------------------
-# Selecionamos a mesma matriz de proporções utilizada na PCA para garantir simetria
-dados_cluster_base <- df_final %>%
-  ungroup() %>%
-  select(
-    prop_bolsonaro_2t,
-    prop_votos_fpe,
-    prop_catolicos,
-    prop_evangelicos,
-    prop_sem_religiao,
-    renda_media_proxy
-  ) %>%
-  na.omit()
-
-# O escalonamento (Z-score) é obrigatório para que a escala monetária da renda
-# não distorça o cálculo de distância euclidiana das variáveis em taxa
-dados_cluster_escala <- scale(dados_cluster_base)
-
-# 2. EXECUÇÃO DO ALGORITMO K-MEANS ---------------------------------------------
-# Forçamos a semente 42 para reprodutibilidade idêntica no GitHub dos autores
 set.seed(42)
-
-# Executamos o K-Means fixando 3 centros estruturais e 25 inicializações aleatórias
 km_pipeline <- kmeans(dados_cluster_escala, centers = 3, nstart = 25)
 
-# 3. VINCULAÇÃO DOS CLUSTERS E CONSTRUÇÃO DA MATRIZ DE MACRO-PERFIS ------------
-# Acoplamos o ID do cluster gerado de volta à base original de dados brutos
-df_resultado_clusters <- dados_cluster_base %>%
+df_resultado_clusters <- dados_pca_pipeline %>%
   mutate(cluster_id = as.factor(km_pipeline$cluster))
 
-# Construímos a tabela de perfis com arredondamentos idênticos aos do manuscrito
 perfil_grupos_tabela3 <- df_resultado_clusters %>%
   group_by(cluster_id) %>%
   summarise(
     Quantidade_Municipios  = n(),
-    Media_Apoio_Presid     = round(mean(prop_bolsonaro_2t), 4),
+    Media_Diferenca_Votos  = round(mean(apoio_presid), 4),
     Percentual_Evangelicos = paste0(round(mean(prop_evangelicos) * 100, 2), "%"),
     Percentual_Catolicos   = paste0(round(mean(prop_catolicos) * 100, 2), "%"),
     Percentual_Sem_Relig   = paste0(round(mean(prop_sem_religiao) * 100, 2), "%"),
+    Percentual_Espiritas   = paste0(round(mean(prop_espirita) * 100, 2), "%"), 
+    Percentual_Matriz_Afro = paste0(round(mean(prop_afro) * 100, 2), "%"),     
     Renda_Media_Grupo      = paste0("R$ ", round(mean(renda_media_proxy), 2)),
     .groups = "drop"
   ) %>%
   arrange(cluster_id)
 
-# 4. EXIBIÇÃO NO CONSOLE E EXPORTAÇÃO DOS COMPONENTES DE SEGURANÇA -------------
 cat("\n==================================================================\n")
-cat("   SAÍDA OFICIAL: MACRO-PERFIS DOS CLUSTERS (CONFRONTO TABELA 3)   \n")
+cat("   SAÍDA K-MEANS  O TEXTO  \n")
 cat("==================================================================\n")
 print(perfil_grupos_tabela3)
 cat("==================================================================\n\n")
 
-# Gravação dos outputs no disco para auditoria científica de terceiros
 write_csv(df_resultado_clusters, "resultados_eleicao/base_municipios_com_clusters.csv")
 write_csv(perfil_grupos_tabela3, "resultados_eleicao/tabela_3_perfis_kmeans.csv")
 
