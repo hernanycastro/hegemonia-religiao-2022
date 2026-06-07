@@ -1,50 +1,63 @@
 # “The Census of the Saved”: Religious Territories and Bolsonarist Hegemony in Brazil
+## Citação
+Se este modelo ou os dados tratados aqui dispostos forem úteis para a sua pesquisa, por favor, cite o artigo correspondente:
+> CASTRO, Hernany; GRACINO JUNIOR, Paulo; SILVA, Mayra Goulart da. *“The Census of the Saved”: Religious Territories and Bolsonarist Hegemony in Brazil*. [Brasília: 2026].
 
-Repositório oficial contendo o pipeline de dados, scripts de modelagem multivariada e rotinas de aprendizado de máquina aplicados no artigo *“O Censo dos Salvos”: Territórios Religiosos e Hegemonia Bolsonarista no Brasil*.
+## Repositório de Replicação Estatística
 
-O projeto investiga a articulação entre as formações religiosas territorializadas e o fenômeno eleitoral nas eleições presidenciais de 2022, utilizando o arcabouço pós-estruturalista de Ernesto Laclau e Chantal Mouffe.
+Este repositório contém o pipeline automatizado em R e a documentação metodológica para a replicação integral dos dados, tabelas e modelos estatísticos apresentados no artigo **“The Census of the Saved”: Religious Territories and Bolsonarist Hegemony in Brazil** (em português: *“O Censo dos Salvos”: Territórios Religiosos e Hegemonia Bolsonarista no Brasil*).
 
-## 📊 Desenho Metodológico e Modelagem
+O estudo reinterpreta a arena político-religiosa brasileira a partir do quadro teórico pós-estruturalista de Laclau e Mouffe, articulando dados demográficos do Censo IBGE e resultados eleitorais oficiais do Tribunal Superior Eleitoral (TSE) referentes ao pleito presidencial de 2022.
 
-A arquitetura empírica adota uma abordagem relacional baseada em taxas proporcionais e eixos socioeconômicos regionalizados por município (controlados por meio de uma proxy de renda estrutural baseada no rendimento médio histórico das Unidades da Federação). O pipeline executa três técnicas integradas:
+---
 
-1. **Análise de Componentes Principais (PCA):** Mapeamento das coordenadas latentes do campo discursivo. Além dos eixos tradicionais (PC1 e PC2), o modelo estende a observação de forma exploratória à terceira dimensão (PC3 = 0,99 de autovalor), retendo um total robusto de 78,42% da variância explicada.
-2. **Modelagem Preditiva (Random Forest):** Algoritmo supervisionado para mensurar o peso de importância por permutação das fraturas socioeconômicas e confessionais no voto do segundo turno.
-3. **Agrupamento Territorial (K-Means):** Algoritmo não supervisionado aplicado sobre a malha de proporções escalonadas para a extração de uma tipologia discreta de três macro-perfis socio-religiosos no território brasileiro.
+## Estrutura do Modelo e Pipeline
 
-## 📂 Estrutura do Repositório
+O script `censo_salvos.R` executa uma abordagem metodológica integrada em três estágios coordenados através do ecossistema `tidymodels`:
 
-* `censo_salvos.R`: Script unificado e comentado contendo toda a rotina de carregamento de pacotes, extração via API, engenharia de recursos, modelagem multivariada e exportação de resultados.
-* `/resultados_eleicao/`: Diretório gerado automaticamente pelo script para salvar tabelas de coeficientes (`.csv`) e gráficos de diagnóstico (`.png`).
+1. **Análise de Componentes Principais (PCA):** Redução de dimensionalidade sobre as matrizes confessionais e proxies socioeconômicas escalonadas por município, mapeando as superfícies de inscrição discursiva e os eixos de antagonismo.
+2. **Modelagem de Aprendizado de Máquina (K-Means & Random Forest):** Clusterização não supervisionada para a criação de uma tipologia territorial de fricção religiosa e validação preditiva não linear da variância do voto.
+3. **Regressão Linear Múltipla (OLS):** Isolamento dos efeitos diretos e condicionais das variáveis confessionais e de controle sobre a fronteira de antagonismo político líquido ($Bolsonaro\% - Lula\%$).
 
-## 🛠️ Tecnologias e Pacotes Utilizados
+---
 
-O pipeline foi inteiramente desenvolvido em linguagem **R (versão ≥ 4.6.0)**. O script utiliza o gerenciador de dependências `pacman` e mobiliza as seguintes engines:
+## Matriz de Outputs Oficiais (Logs do Console)
 
-* `electionsBR`: Raspagem automatizada de dados oficiais de candidaturas do TSE.
-* `basedosdados`: Conexão programática via BigQuery (Google Cloud) para extração direta do Censo IBGE e dos resultados eleitorais por município.
-* `tidyverse`: Manipulação, tratamento e engenharia de recursos.
-* `tidymodels` & `ranger`: Framework de Machine Learning e engine de alta performance para florestas aleatórias.
-* `factoextra`: Extração e visualização gráfica dos resultados da PCA e K-Means.
+Para fins de reprodutibilidade estrita, os modelos gerados pelo script local devem convergir exatamente para os parâmetros oficiais descritos abaixo:
 
-## 🚀 Como Executar e Replicar a Análise
+### 1. Autovalores e Variância Explicada da PCA (Critério de Guttman-Kaiser)
+Extraídos via decomposição espectral nativa (`factoextra::get_eigenvalue`), estruturados em ordem estritamente decrescente de variância:
 
-### 1. Autenticação no Google Cloud
-Os dados brutos são extraídos diretamente do BigQuery por meio da API da *Base dos Dados*. Para rodar o pipeline, você precisará de um projeto ativo (gratuito) no Google Cloud Sandbox para gerar seu ID de faturamento.
+| Dimensão | Autovalor (*Eigenvalue*) | % da Variância | % Acumulada | Perfil Teórico do Vetor |
+| :---: | :---: | :---: | :---: | :--- |
+| **PC1** | 2,9648 | 37,06% | 37,06% | Clivagem Cristã Majoritária e Renda |
+| **PC2** | 1,1339 | 14,17% | 51,23% | Pluralismo Contra-Hegemônico (Minorias) |
+| **PC3** | 1,0011 | 12,51% | 63,75% | Vetor de Desinstitucionalização Secular |
+| **PC4** | 0,9952 | 12,44% | 76,18% | Representação Política Corporativa (FPE) |
 
-### 2. Execução
-Clone este repositório e execute a rotina no console do RStudio:
+### 2. Sumário Estatístico da Regressão Linear Múltipla OLS (`modelo_religioes`)
+* **Variável Dependente:** `apoio_presid` (Antagonismo Líquido no 2º Turno; Escala de -1 a +1)
+* **Ajuste Global:** $R^2$ Múltiplo = 0,5849 | **$R^2$ Ajustado = 0,5844**
+* **Significância:** Estatística $F = 1120$ sobre 7 e 5562 DF ($p\text{-valor} < 2,2 \times 10^{-16}$)
 
+| Variável Preditora | Coeficiente (*Estimate*) | Erro Padrão (*Std. Error*) | Estatística $t$ | Pr(>\|t\|) |
+| :--- | :---: | :---: | :---: | :---: |
+| **(Intercepto)** | -1,1430 | 0,0638 | -17,896 | $< 2,2 \times 10^{-16}$ *** |
+| `prop_catolicos` | -0,5789 | 0,0685 | -8,444 | $< 2,2 \times 10^{-16}$ *** |
+| `prop_evangelicos` | +0,7510 | 0,0677 | 11,091 | $< 2,2 \times 10^{-16}$ *** |
+| `prop_espirita` | -1,7590 | 0,2824 | -6,229 | $5,03 \times 10^{-10}$ *** |
+| `prop_afro` | -3,6330 | 0,5202 | -6,983 | $3,22 \times 10^{-12}$ *** |
+| `prop_sem_religiao` | -0,2170 | 0,1597 | -1,359 | 0,174 (Não Sig.) |
+| `renda_media_proxy` | +0,0004 | 0,0000 | 55,180 | $< 2,2 \times 10^{-16}$ *** |
+| `log(populacao_total)`| +0,0396 | 0,0027 | 14,398 | $< 2,2 \times 10^{-16}$ *** |
+
+---
+
+## Como Executar a Replicação
+
+### Pré-requisitos
+Certifique-se de ter o R (versão $\ge$ 4.6.0) instalado. As dependências institucionais de dados (microdados do Censo e arquivos do TSE) são consumidas via API ou carregadas diretamente através do repositório público hospedado na iniciativa *Base dos Dados* via Google BigQuery.
+
+Instale os pacotes necessários executando no console:
 ```R
-# Insira seu ID de faturamento validado do Google Cloud na linha correspondente do script:
-# set_billing_id("seu-projeto-gcp")
-
-# Execute o arquivo de replicação
-source("censo_salvos.R")
-
-📜 Licença e Citação
-Este repositório está sob a licença MIT. Os dados e scripts são de livre acesso para fins de auditoria científica, replicação e avanço da pesquisa social quantitativa.
-
-Se este código for útil para a sua pesquisa, por favor, cite o trabalho correspondente:
-
-CASTRO, Hernany Gomes de; GRACINO JUNIOR, Paulo; SILVA, Mayra Goulart da. **“O Censo dos Salvos”: Territórios Religiosos e Hegemonia Bolsonarista no Brasil.** *Manuscrito em submissão*, 2026.
+install.packages(c("tidyverse", "factoextra", "tidymodels", "randomForest", "broom"))Hegemonia Bolsonarista no Brasil.** *Manuscrito em submissão*, 2026.
